@@ -294,6 +294,21 @@ public func upload(URLRequest: URLRequestConvertible, stream: NSInputStream) -> 
     return Manager.sharedInstance.rx_upload(URLRequest, stream: stream)
 }
 
+/**
+ Encodes the `MultipartFormData` and creates a request to upload the result to the specified URL request.
+ The request is started immediately.
+ 
+ - parameter URLRequest:              The URL request.
+ - parameter encodingMemoryThreshold: The encoding memory threshold in bytes.
+ `MultipartFormDataEncodingMemoryThreshold` by default.
+ - parameter multipartFormData:       The closure used to append body parts to the `MultipartFormData`.
+ - returns: The observable of `Request` for the created upload request.
+ */
+
+public func upload(URLRequest: URLRequestConvertible, encodingMemoryThreshold: UInt64 = Manager.MultipartFormDataEncodingMemoryThreshold, multipartFormData: MultipartFormData throws -> Void) -> Observable<Request> {
+    return Manager.sharedInstance.rx_upload(URLRequest, encodingMemoryThreshold: encodingMemoryThreshold, multipartFormData: multipartFormData)
+}
+
 // MARK: Download
 
 /**
@@ -620,6 +635,58 @@ extension Manager {
             return self.upload(URLRequest, stream: stream)
         }
     }
+    
+    /**
+     Encodes the `MultipartFormData` and creates a request to upload the result to the specified URL request.
+     The request is started immediately.
+     
+     - parameter URLRequest:              The URL request.
+     - parameter encodingMemoryThreshold: The encoding memory threshold in bytes.
+     `MultipartFormDataEncodingMemoryThreshold` by default.
+     - parameter multipartFormData:       The closure used to append body parts to the `MultipartFormData`.
+     - returns: The observable of `Request` for the created upload request.
+     */
+    
+    public func rx_upload(URLRequest: URLRequestConvertible, encodingMemoryThreshold: UInt64 = Manager.MultipartFormDataEncodingMemoryThreshold, multipartFormData: MultipartFormData throws -> Void) -> Observable<Request> {
+        
+        return Observable.create { subscription in
+            let formData = MultipartFormData()
+            do {
+                try multipartFormData(formData)
+            } catch {
+                subscription.onError(error)
+            }
+            
+            let URLRequestWithContentType = URLRequest.URLRequest
+            URLRequestWithContentType.setValue(formData.contentType, forHTTPHeaderField: "Content-Type")
+            
+            let isBackgroundSession = self.session.configuration.identifier != nil
+            
+            if formData.contentLength < encodingMemoryThreshold && !isBackgroundSession {
+                do {
+                    let data = try formData.encode()
+                    subscription.onNext(self.upload(URLRequestWithContentType, data: data))
+                } catch {
+                    subscription.onError(error)
+                }
+            } else {
+                let fileManager = NSFileManager.defaultManager()
+                let tempDirectoryURL = NSURL(fileURLWithPath: NSTemporaryDirectory())
+                let directoryURL = tempDirectoryURL.URLByAppendingPathComponent("com.alamofire.manager/multipart.form.data")
+                let fileName = NSUUID().UUIDString
+                let fileURL = directoryURL.URLByAppendingPathComponent(fileName)
+                
+                do {
+                    try fileManager.createDirectoryAtURL(directoryURL, withIntermediateDirectories: true, attributes: nil)
+                    try formData.writeEncodedDataToDisk(fileURL)
+                    subscription.onNext(self.upload(URLRequestWithContentType, file: fileURL))
+                } catch {
+                    subscription.onError(error)
+                }
+            }
+            return NopDisposable.instance
+        }
+    }
 
     // MARK: Download
 
@@ -650,6 +717,7 @@ extension Manager {
             return self.download(data, destination: destination)
         }
     }
+    
 }
 
 // MARK: Request - Common Response Handlers
